@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
+import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Mapping, Optional
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 import datetime as _dt
 
@@ -129,6 +132,117 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for 3.10
     import tomli as tomllib  # type: ignore
 
 
+def _load_pyproject(repo_dir: Path) -> Mapping[str, object]:
+    pyproject_path = repo_dir / "pyproject.toml"
+    if not pyproject_path.exists():
+        return {}
+    try:
+        return tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    except Exception:  # pragma: no cover - permissive fallback for malformed files
+        return {}
+
+
+def _infer_project_extras(repo_dir: Path) -> List[str]:
+    data = _load_pyproject(repo_dir)
+    extras: List[str] = []
+
+    optional = data.get("project", {}).get("optional-dependencies", {})
+    if isinstance(optional, dict):
+        for candidate in ("dev", "test", "tests", "ci"):
+            if candidate in optional:
+                extras.append(candidate)
+
+    tool_section = data.get("tool", {})
+    if isinstance(tool_section, dict):
+        poetry_group = tool_section.get("poetry", {}).get("group", {}) if isinstance(tool_section.get("poetry"), dict) else {}
+        if isinstance(poetry_group, dict):
+            for candidate in ("dev", "test", "tests", "ci"):
+                group_cfg = poetry_group.get(candidate)
+                if isinstance(group_cfg, dict) and group_cfg.get("dependencies"):
+                    extras.append(candidate)
+
+    return sorted(set(extras))
+
+
+def _build_install_commands(repo_dir: Path) -> List[List[str]]:
+    commands: List[List[str]] = []
+
+    requirement_files = [
+        "requirements.txt",
+        "requirements-dev.txt",
+        "requirements-test.txt",
+        "requirements/tests.txt",
+        "requirements/dev.txt",
+        "requirements/test.txt",
+        "requirements/ci.txt",
+    ]
+    for rel_path in requirement_files:
+        if (repo_dir / rel_path).exists():
+            commands.append(["python", "-m", "pip", "install", "-r", rel_path])
+
+    editable_target = "."
+    extras = _infer_project_extras(repo_dir)
+    if extras:
+        editable_target = f".[{','.join(extras)}]"
+
+    if (repo_dir / "setup.py").exists() or (repo_dir / "setup.cfg").exists() or (repo_dir / "pyproject.toml").exists():
+        commands.append(["python", "-m", "pip", "install", "-e", editable_target])
+
+    commands.append(["python", "-m", "pip", "install", "pytest", "coverage"])
+    return commands
+
+
+def _build_marker_expression(markers: Sequence[str]) -> str:
+    clauses = [f"not {marker}" for marker in markers if marker]
+    return " and ".join(clauses)
+
+
+def _parse_pytest_summary(output: str) -> Dict[str, int]:
+    counts = {
+        "passed": 0,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "xfailed": 0,
+        "xpassed": 0,
+        "rerun": 0,
+        "deselected": 0,
+        "warnings": 0,
+    }
+
+    summary_line: Optional[str] = None
+    for line in reversed(output.splitlines()):
+        if line.strip().startswith("===") and " in " in line:
+            summary_line = line.strip("= \n")
+            break
+
+    if not summary_line:
+        return counts
+
+    stats_part = summary_line.split(" in ", 1)[0]
+    for chunk in stats_part.split(","):
+        chunk = chunk.strip()
+        match = re.match(r"(?P<count>\d+) (?P<label>[A-Za-z_-]+)", chunk)
+        if not match:
+            continue
+        value = int(match.group("count"))
+        label = match.group("label").lower()
+        if label in counts:
+            counts[label] += value
+        elif label in {"error", "errors"}:
+            counts["errors"] += value
+        elif label in {"failures"}:
+            counts["failed"] += value
+        elif label in {"passes"}:
+            counts["passed"] += value
+        elif label in {"warning", "warnings"}:
+            counts["warnings"] += value
+        elif label in {"rerun", "reruns"}:
+            counts["rerun"] += value
+
+    return counts
+
+
 def _stage_discover(context: PipelineContext) -> StageResult:
     checkout_created = context.ensure_checkout()
     repo_dir = context.repo_checkout_path
@@ -189,9 +303,38 @@ def _stage_build(context: PipelineContext) -> StageResult:
     if not plan_path.exists():
         raise RuntimeError("Plan stage must be executed before build.")
     plan_data = json.loads(plan_path.read_text())["details"]
+    repo_dir = context.repo_checkout_path
+
+    install_commands = _build_install_commands(repo_dir)
+    build_start = time.perf_counter()
+    install_logs: List[Mapping[str, object]] = []
+    for command in install_commands:
+        result = run_command(command, cwd=repo_dir, check=False)
+        install_logs.append(
+            {
+                "command": list(command),
+                "returncode": result.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            }
+        )
+        if result.returncode != 0:
+            return StageResult(
+                "build",
+                "failed",
+                {
+                    "strategy": plan_data["strategy"],
+                    "commands": install_logs,
+                    "message": "Dependency installation failed.",
+                },
+            )
+
+    freeze = run_command(["python", "-m", "pip", "freeze"], cwd=repo_dir, check=False)
+    pip_freeze = [line.strip() for line in freeze.stdout.splitlines() if line.strip()]
+
     env_manifest = {
         "python_version": sys.version.split()[0],
-        "pip_freeze": [],
+        "pip_freeze": pip_freeze,
         "apt_packages": [],
         "env": {
             "PYTHONHASHSEED": "0",
@@ -203,14 +346,16 @@ def _stage_build(context: PipelineContext) -> StageResult:
 
     dockerfile_hash = hashlib.sha256(json.dumps(plan_data, sort_keys=True).encode("utf-8")).hexdigest()
 
-    build_details = {
+    build_duration = time.perf_counter() - build_start
+    build_details: Dict[str, object] = {
         "strategy": plan_data["strategy"],
         "base_image": "python:3.11-slim",
         "dockerfile_hash": dockerfile_hash,
         "lockfiles": plan_data["builder_inputs"]["lockfile_sources"],
         "env_manifest": str(env_manifest_path),
         "exit_code": 0,
-        "duration_s": 0,
+        "duration_s": round(build_duration, 3),
+        "commands": install_logs,
     }
     return StageResult("build", "completed", build_details)
 
@@ -219,38 +364,99 @@ def _stage_test(context: PipelineContext) -> StageResult:
     plan_path = context.stage_output(Stage.PLAN)
     if not plan_path.exists():
         raise RuntimeError("Plan stage must be executed before testing.")
+    plan_data = json.loads(plan_path.read_text())["details"]
+    repo_dir = context.repo_checkout_path
 
-    test_index = {
-        "repo_id": context.repo.id,
-        "tests": [],
-    }
+    markers_exclude: Sequence[str] = plan_data.get("tests", {}).get("markers_exclude", [])
+    marker_expression = _build_marker_expression(markers_exclude)
+
     test_index_path = context.artifact_path("test_index.json")
-    dump_json(test_index_path, test_index)
-
     coverage_path = context.artifact_path("coverage.xml")
-    coverage_path.parent.mkdir(parents=True, exist_ok=True)
-    coverage_path.write_text("<coverage branch-rate=\"0\" line-rate=\"0\"/>\n")
-
     log_path = context.logs_dir / "test.log.jsonl"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path.write_text("")
 
+    collect_command = ["python", "-m", "pytest", "--collect-only", "-q"]
+    if marker_expression:
+        collect_command.extend(["-m", marker_expression])
+    collect_result = run_command(collect_command, cwd=repo_dir, check=False)
+    discovered_nodes = [line.strip() for line in collect_result.stdout.splitlines() if line.strip()]
+
+    tests_index = {
+        "repo_id": context.repo.id,
+        "tests": [{"nodeid": node, "markers": []} for node in discovered_nodes],
+    }
+    dump_json(test_index_path, tests_index)
+
+    coverage_path.parent.mkdir(parents=True, exist_ok=True)
+    run_command(["coverage", "erase"], cwd=repo_dir, check=False)
+    pytest_command = ["coverage", "run", "-m", "pytest", "-q", "--maxfail", "1", "--durations", "30"]
+    if marker_expression:
+        pytest_command.extend(["-m", marker_expression])
+    test_result = run_command(pytest_command, cwd=repo_dir, check=False)
+
+    coverage_cmd = ["coverage", "xml", "-o", str(coverage_path)]
+    coverage_result = run_command(coverage_cmd, cwd=repo_dir, check=False)
+
+    coverage_pct = 0.0
+    if coverage_result.returncode == 0 and coverage_path.exists():
+        try:
+            tree = ET.parse(coverage_path)
+            root = tree.getroot()
+            if root is not None and root.get("line-rate") is not None:
+                coverage_pct = float(root.get("line-rate", "0")) * 100
+        except ET.ParseError:
+            coverage_pct = 0.0
+
+    summary_counts = _parse_pytest_summary(test_result.stdout + "\n" + test_result.stderr)
+    selected = sum(
+        summary_counts[key]
+        for key in ("passed", "failed", "errors", "skipped", "xfailed", "xpassed", "rerun")
+    )
+    failed = summary_counts["failed"] + summary_counts["errors"]
+
+    log_entries = [
+        {
+            "event": "collect",
+            "command": collect_command,
+            "returncode": collect_result.returncode,
+            "stdout": collect_result.stdout,
+            "stderr": collect_result.stderr,
+        },
+        {
+            "event": "run",
+            "command": pytest_command,
+            "returncode": test_result.returncode,
+            "stdout": test_result.stdout,
+            "stderr": test_result.stderr,
+        },
+    ]
+    log_path.write_text("\n".join(json.dumps(entry) for entry in log_entries) + "\n")
+
+    status = "completed" if test_result.returncode == 0 else "failed"
     test_details = {
         "runner": context.repo.tests.runner,
-        "discovered": 0,
-        "selected": 0,
-        "passed": 0,
-        "failed": 0,
-        "skipped": 0,
-        "xfailed": 0,
+        "discovered": len(discovered_nodes),
+        "selected": selected,
+        "passed": summary_counts["passed"],
+        "failed": failed,
+        "skipped": summary_counts["skipped"],
+        "xfailed": summary_counts["xfailed"],
         "coverage": {
-            "line_pct": 0.0,
+            "line_pct": round(coverage_pct, 2),
             "report_path": str(coverage_path),
         },
         "index_path": str(test_index_path),
         "logs": [str(log_path)],
     }
-    return StageResult("test", "completed", test_details)
+
+    if collect_result.returncode != 0:
+        status = "failed"
+        test_details["message"] = "Pytest collection failed."
+    if coverage_result.returncode != 0:
+        test_details["coverage"]["line_pct"] = 0.0
+        test_details["coverage"]["error"] = coverage_result.stderr.strip()
+
+    return StageResult("test", status, test_details)
 
 
 def _stage_package(context: PipelineContext) -> StageResult:
