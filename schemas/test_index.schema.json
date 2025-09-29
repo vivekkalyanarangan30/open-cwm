@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-cwm.dev/schemas/test_index.schema.json",
+  "title": "Test Index",
+  "type": "object",
+  "required": ["repo_id", "tests"],
+  "properties": {
+    "repo_id": {"type": "string"},
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["nodeid", "markers", "approx_runtime_s"],
+        "properties": {
+          "nodeid": {"type": "string"},
+          "markers": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "approx_runtime_s": {"type": "number", "minimum": 0}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}
