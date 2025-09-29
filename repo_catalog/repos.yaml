@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "repos": [
+    {
+      "id": "pallets_flask",
+      "url": "https://github.com/pallets/flask",
+      "commit": "main",
+      "license": "BSD-3-Clause",
+      "language": "python",
+      "tests": {
+        "runner": "pytest",
+        "markers_exclude": ["network", "slow"],
+        "timeout_s": 1800
+      }
+    },
+    {
+      "id": "encode_starlette",
+      "url": "https://github.com/encode/starlette",
+      "commit": "main",
+      "license": "BSD-3-Clause",
+      "language": "python",
+      "tests": {
+        "runner": "pytest",
+        "markers_exclude": ["network"],
+        "timeout_s": 1200
+      }
+    }
+  ]
+}
