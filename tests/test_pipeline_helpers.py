@@ -35,6 +35,14 @@ def test_parse_pytest_summary_handles_failures() -> None:
     assert counts["errors"] == 2
 
 
+def test_parse_pytest_summary_quiet_output() -> None:
+    summary = "5 passed, 1 skipped, 2 warnings in 0.12s"
+    counts = _parse_pytest_summary(summary)
+    assert counts["passed"] == 5
+    assert counts["skipped"] == 1
+    assert counts["warnings"] == 2
+
+
 def test_build_install_commands_infers_requirements(tmp_path: Path) -> None:
     (tmp_path / "requirements.txt").write_text("pytest\n")
     (tmp_path / "pyproject.toml").write_text(
