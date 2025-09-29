@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-cwm.dev/schemas/env_manifest.schema.json",
+  "title": "Environment Manifest",
+  "type": "object",
+  "required": ["python_version", "pip_freeze", "apt_packages", "env"],
+  "properties": {
+    "python_version": {"type": "string"},
+    "pip_freeze": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "apt_packages": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
+    }
+  },
+  "additionalProperties": true
+}

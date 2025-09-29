@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-cwm.dev/schemas/repo_image_manifest.schema.json",
+  "title": "Repo Image Manifest",
+  "type": "object",
+  "required": ["repo_id", "source", "build", "tests", "image", "artifacts", "capabilities"],
+  "properties": {
+    "repo_id": {
+      "type": "string",
+      "description": "Canonical identifier for the upstream repository."
+    },
+    "source": {
+      "type": "object",
+      "required": ["url", "commit", "license"],
+      "properties": {
+        "url": {"type": "string", "format": "uri"},
+        "commit": {"type": "string"},
+        "license": {"type": "string"}
+      }
+    },
+    "build": {
+      "type": "object",
+      "required": ["strategy", "base_image", "dockerfile_hash", "lockfiles", "env_manifest", "exit_code", "duration_s"],
+      "properties": {
+        "strategy": {"type": "string", "enum": ["activ", "poetry", "pip", "conda", "custom"]},
+        "base_image": {"type": "string"},
+        "dockerfile_hash": {"type": "string"},
+        "lockfiles": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "env_manifest": {"type": "string"},
+        "exit_code": {"type": "integer"},
+        "duration_s": {"type": "number", "minimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "tests": {
+      "type": "object",
+      "required": ["runner", "discovered", "selected", "passed", "failed", "skipped", "xfailed", "coverage", "index_path", "logs"],
+      "properties": {
+        "runner": {"type": "string"},
+        "discovered": {"type": "integer", "minimum": 0},
+        "selected": {"type": "integer", "minimum": 0},
+        "passed": {"type": "integer", "minimum": 0},
+        "failed": {"type": "integer", "minimum": 0},
+        "skipped": {"type": "integer", "minimum": 0},
+        "xfailed": {"type": "integer", "minimum": 0},
+        "coverage": {
+          "type": "object",
+          "required": ["line_pct", "report_path"],
+          "properties": {
+            "line_pct": {"type": "number", "minimum": 0, "maximum": 100},
+            "report_path": {"type": "string"}
+          }
+        },
+        "index_path": {"type": "string"},
+        "logs": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      },
+      "additionalProperties": true
+    },
+    "image": {
+      "type": "object",
+      "required": ["name", "size_mb", "digest"],
+      "properties": {
+        "name": {"type": "string"},
+        "size_mb": {"type": "number", "minimum": 0},
+        "digest": {"type": "string"}
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "run_pytest": {"type": "boolean"},
+        "non_network": {"type": "boolean"},
+        "deterministic_seed": {"type": "boolean"}
+      },
+      "additionalProperties": true
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Optional free-form metadata for downstream modules."
+    }
+  },
+  "additionalProperties": false
+}
