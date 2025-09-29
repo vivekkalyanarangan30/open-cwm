@@ -212,8 +212,14 @@ def _parse_pytest_summary(output: str) -> Dict[str, int]:
 
     summary_line: Optional[str] = None
     for line in reversed(output.splitlines()):
-        if line.strip().startswith("===") and " in " in line:
-            summary_line = line.strip("= \n")
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("===") and " in " in stripped:
+            summary_line = stripped.strip("= ").strip()
+            break
+        if re.match(r"^\d+ [A-Za-z_-]+(?:, \d+ [A-Za-z_-]+)* in .+$", stripped):
+            summary_line = stripped
             break
 
     if not summary_line:
