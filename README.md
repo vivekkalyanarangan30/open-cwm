@@ -1,4 +1,4 @@
-# Open-CWM Module 1: Executable Repository Images
+# WIP: Open-CWM Module 1: Executable Repository Images
 
 This repository contains the pilot implementation of the Open-CWM Module 1
 pipeline. The goal of Module 1 is to produce reproducible, executable
